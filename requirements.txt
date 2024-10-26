@@ -1,0 +1,5 @@
+aiogram==3.13.1
+aiohttp==3.10.10
+aiosqlite==0.20.0
+LOLZTEAM==1.4.3
+requests==2.32.3
