@@ -1,18 +1,24 @@
-from aiogram import Dispatcher, types, Bot
-from aiogram.dispatcher import FSMContext
-from aiogram.dispatcher.filters.state import State, StatesGroup
+from aiogram import Dispatcher, types, Bot, Router, F
+from aiogram.filters import CommandStart, StateFilter, Command, CommandObject
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
 import aiosqlite
 import re
 from LOLZTEAM.API import Forum, Market
+import config
 from config import token, secret, supp
+from keyboards import get_admin_keyboard, get_user_keyboard, inline_keyboard, ApplicationActionCallback
 
 market = Market(token=token, language="en")
 forum = Forum(token=token, language="en")
 
 class ApplicationForm(StatesGroup):
     profile_link = State()
-    
+  
+
+router = Router()
 
 # Список для хранения идентификаторов пользователей
 user_ids = set()
@@ -33,9 +39,10 @@ async def is_blocked(user_id):
     async with aiosqlite.connect('bot_database.db') as db:
         async with db.execute('SELECT * FROM blocked_users WHERE user_id = ?', (user_id,)) as cursor:
             return await cursor.fetchone() is not None
-        
-async def clear_db_command(message: types.Message, admin_ids):
-     if message.from_user.id in admin_ids:
+
+@router.message(Command('cleardb'))      
+async def clear_db_command(message: types.Message):
+     if message.from_user.id in config.ADMIN_IDS:
     # Подключение к базе данных
         async with aiosqlite.connect('bot_database.db') as db:
             await db.execute("DELETE FROM applications")
@@ -43,8 +50,9 @@ async def clear_db_command(message: types.Message, admin_ids):
             await db.commit()
         await message.answer("Database succesfully deleted")
 
-async def list_ads_command(message: types.Message, admin_ids):
-    if message.from_user.id in admin_ids:
+@router.message(F.text == '📑 Получить ссылки на розыгрыши')
+async def list_ads_command(message: types.Message):
+    if message.from_user.id in config.ADMIN_IDS:
         async with aiosqlite.connect('bot_database.db') as db:
             async with db.execute("SELECT profile_link FROM applications WHERE status = 'approved'") as cursor:
                 rows = await cursor.fetchall()
@@ -57,32 +65,32 @@ async def list_ads_command(message: types.Message, admin_ids):
         await message.answer(f"Список рекламных объявлений:\n{ad_list}")
 
 
-is_bot_active = True
-async def disabled(message: types.Message, admin_ids):
-    if message.from_user.id in admin_ids:
+is_bot_active = False
+@router.message(Command('turnoff'))
+async def disabled(message: types.Message):
+    if message.from_user.id in config.ADMIN_IDS:
         global is_bot_active
         is_bot_active = False
         await message.answer("Бот выключен!")
     else:
         await message.answer("У вас нет прав для выполнения этой команды!")
 
-
-async def enabled(message: types.Message, admin_ids):
-    if message.from_user.id in admin_ids:
-        global is_bot_active
-        global price_id
-        if message.from_user.id in admin_ids:
-            args1 = message.get_args()
-            if not args1:
-                await message.reply("Пожалуйста, укажите сумму скупки.")
-                return
+@router.message(Command('turnon'))
+async def enabled(message: types.Message, command: CommandObject):
+    
+    if message.from_user.id in config.ADMIN_IDS:
+        args1 = command.args
+        if not args1:
+            await message.reply("Пожалуйста, укажите сумму скупки.")
+            return
+        if args1.isdigit():
             try:
-                price_id = int(args1)  # Преобразуем строку аргумента в целое число
-                
+                config.price_id = args1  # Преобразуем строку аргумента в целое число
+                    
             except ValueError:
                 await message.reply("ID должен быть числом.")
                 return
-            await message.answer(f"Бот включен! Цена скупки: {price_id}")
+            await message.answer(f"Бот включен! Цена скупки: {config.price_id}")
             async with aiosqlite.connect('bot_database.db') as db:
                 is_bot_active = True
                 await db.execute("DELETE FROM applications")
@@ -92,82 +100,85 @@ async def enabled(message: types.Message, admin_ids):
     else:
         await message.answer("У вас нет прав для выполнения этой команды!")
 
-async def set_price(message: types.Message, admin_ids):
-    global price_id
-    if message.from_user.id in admin_ids:
-        args1 = message.get_args()
+@router.message(Command('price'))
+async def set_price(message: types.Message, command: CommandObject):
+    if message.from_user.id in config.ADMIN_IDS:
+        args1 = command.args
         if not args1:
             await message.reply("Пожалуйста, укажите сумму.")
             return
-        try:
-            price_id = int(args1)  # Преобразуем строку аргумента в целое число
-        except ValueError:
+        if args1.isdigit():
+            try:
+                config.price_id = args1  # Преобразуем строку аргумента в целое число          
+            except ValueError:
+                await message.reply("ID должен быть числом.")
+                return
+            await message.answer(config.price_id)
+        else:
             await message.reply("ID должен быть числом.")
-            return
-        await message.answer(price_id)
 
-async def pay_command(message: types.Message, admin_ids, bot: Bot):
-    global price_id
-    print(f"Initial value of price_id: {price_id}")  # Добавьте это для проверки перед использованием
-
+@router.message(Command('pay'))
+async def pay_command(message: types.Message, bot: Bot, command: CommandObject):
+    print(f"Initial value of price_id: {config.price_id}")  # Добавьте это для проверки перед использованием
     async with aiosqlite.connect('bot_database.db') as db:
-        if message.from_user.id in admin_ids:
-            args = message.get_args()
+        if message.from_user.id in config.ADMIN_IDS:
+            args = command.args
 
             if not args:
                 await message.reply("Пожалуйста, укажите ID строки.")
                 return
+            if args.isdigit():
+                try:
+                    app_id = int(args)
+                except ValueError:
+                    await message.reply("ID должен быть числом.")
+                    return
 
-            try:
-                app_id = int(args)
-            except ValueError:
-                await message.reply("ID должен быть числом.")
-                return
+                async with db.execute('SELECT profile_link FROM applications WHERE id = ?', (app_id,)) as cursor:
+                    url_row = await cursor.fetchone()
+                    if url_row:
+                        url = url_row[0]
+                        print(f"Extracted URL: {url}")  # Отладочный вывод
 
-            async with db.execute('SELECT profile_link FROM applications WHERE id = ?', (app_id,)) as cursor:
-                url_row = await cursor.fetchone()
-                if url_row:
-                    url = url_row[0]
-                    print(f"Extracted URL: {url}")  # Отладочный вывод
+                        matc = re.search(r'threads/(\d+)', url)
+                        if matc:
+                            thread_i = matc.group(1)
+                            response = forum.posts.list(thread_i)
+                            data = response.json()
+                            print(f"Forum response data: {data}")  # Отладочный вывод
 
-                    matc = re.search(r'threads/(\d+)', url)
-                    if matc:
-                        thread_i = matc.group(1)
-                        response = forum.posts.list(thread_i)
-                        data = response.json()
-                        print(f"Forum response data: {data}")  # Отладочный вывод
+                            if 'posts' in data and data['posts']:  # Проверяем, что посты есть
+                                poster_id = data['posts'][0].get('poster_user_id')
+                                profile_link = url
+                                
+                                print(f"Using price_id: {config.price_id}")  # Вывод для проверки значения
+                                # Здесь проверяем наличие переменной price_id
+                                await db.execute('UPDATE applications SET status = "approved" WHERE id = ?', (app_id,))
+                                response = market.payments.transfer(
+                                    user_id=poster_id, amount=config.price_id, currency="rub", comment=f"Выплата по заявке №{app_id}" ,secret_answer=secret
+                                )
+                                if response.status_code == 200:  # Если платеж успешен
+                                    await message.reply(response.json())
+                                    await message.reply(f"Profile Link: {profile_link}")
 
-                        if 'posts' in data and data['posts']:  # Проверяем, что посты есть
-                            poster_id = data['posts'][0].get('poster_user_id')
-                            profile_link = url
-                            
-                            print(f"Using price_id: {price_id}")  # Вывод для проверки значения
-                            # Здесь проверяем наличие переменной price_id
-                            await db.execute('UPDATE applications SET status = "approved" WHERE id = ?', (app_id,))
-                            response = market.payments.transfer(
-                                user_id=poster_id, amount=price_id, currency="rub", comment=f"Выплата по заявке №{app_id}" ,secret_answer=secret
-                            )
-                            if response.status_code == 200:  # Если платеж успешен
-                                await message.reply(response.json())
-                                await message.reply(f"Profile Link: {profile_link}")
+                                    async with db.execute('SELECT user_id FROM applications WHERE id = ?', (app_id,)) as cursor:
+                                        row = await cursor.fetchone()
+                                        user_id = row[0]
 
-                                async with db.execute('SELECT user_id FROM applications WHERE id = ?', (app_id,)) as cursor:
-                                    row = await cursor.fetchone()
-                                    user_id = row[0]
-
-                                # Отправка сообщения пользователю, который отправил заявку
-                                await bot.send_message(user_id, f"Ваш платёж успешно обработан! (ID: {app_id})")
+                                    # Отправка сообщения пользователю, который отправил заявку
+                                    await bot.send_message(user_id, f"Ваш платёж успешно обработан! (ID: {app_id})")
+                            else:
+                                await message.reply("No posts found in response.")
                         else:
-                            await message.reply("No posts found in response.")
+                            await message.reply("Invalid URL format.")
                     else:
-                        await message.reply("Invalid URL format.")
-                else:
-                    await message.reply("Запись не найдена.")
+                        await message.reply("Запись не найдена.")
         await db.commit()
 
 
-async def get_info(message: types.Message, admin_ids, db):
-    if message.from_user.id in admin_ids:
+@router.message(Command('info'))
+async def get_info(message: types.Message, db):
+    if message.from_user.id in config.ADMIN_IDS:
         async with aiosqlite.connect('bot_database.db') as db: 
             args = message.get_args()
 
@@ -202,44 +213,37 @@ async def get_info(message: types.Message, admin_ids, db):
 
 
 
-
-async def start_command(message: types.Message, admin_ids):
+@router.message(CommandStart())
+async def start_command(message: types.Message):
     user_ids.add(message.from_user.id)  # Добавляем пользователя в список
     if is_bot_active == True:
-        if message.from_user.id in admin_ids:
-            keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
-            buttons = ["📄 Просмотр активных заявок", "📑 Просмотр закрытых заявок", "📑 Получить ссылки на розыгрыши"]
-            
-            keyboard.add(buttons[0], buttons[1])
-            keyboard.add(buttons[2])
-            await message.reply(f"Привет, админ! Текущая цена скупки: {price_id} Выберите действие:", reply_markup=keyboard)
+        if message.from_user.id in config.ADMIN_IDS:
+            await message.answer(f"Привет, админ! Текущая цена скупки: {config.price_id} Выберите действие:", reply_markup=get_admin_keyboard())
         else:
-            keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
-            buttons = ["📝 Отправить заявку"]
-            keyboard.add(*buttons)
-            await message.reply(f"Привет! Выберите действие:", reply_markup=keyboard)
+  
+            await message.answer(f"Привет! Выберите действие:", reply_markup=get_user_keyboard())
     if is_bot_active == False:
-        if message.from_user.id in admin_ids:
-            keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
-            buttons = ["📄 Просмотр активных заявок", "📑 Просмотр закрытых заявок"]
-            keyboard.add(*buttons)
-            await message.reply("!!!!!БОТ ВЫКЛЮЧЕН!!!!! Привет, админ! Выберите действие:", reply_markup=keyboard)
+        if message.from_user.id in config.ADMIN_IDS:
+            await message.answer("!!!!!БОТ ВЫКЛЮЧЕН!!!!! Привет, админ! Выберите действие:", reply_markup=get_admin_keyboard())
         else:
-            await message.reply("Скупка приостановлена!")
+            await message.answer("Скупка приостановлена!")
 
-async def start_application(message: types.Message):
+
+@router.message(F.text == '📝 Отправить заявку')
+async def start_application(message: types.Message, state: FSMContext):
     if is_bot_active == True:
         if await is_blocked(message.from_user.id):
             await message.reply("🚫 Вы заблокированы и не можете отправлять заявки.")
             return
 
         await message.reply("Отправьте ссылку на розыгрыш:")
-        await ApplicationForm.profile_link.set()
+        await state.set_state(ApplicationForm.profile_link)
     else:
         await message.reply("Скупка приостановлена!")
 
 
-async def process_profile_link(message: types.Message, state: FSMContext, bot: Bot, admin_ids):
+@router.message(StateFilter(ApplicationForm.profile_link))
+async def process_profile_link(message: types.Message, state: FSMContext, bot: Bot):
     user_data = await state.get_data()
 
     async with aiosqlite.connect('bot_database.db') as db:
@@ -250,15 +254,15 @@ async def process_profile_link(message: types.Message, state: FSMContext, bot: B
         await db.commit()
 
     admin_message = f"📥 Пришла новая заявка. Заявка ID - {application_id}."
-    for admin_id in admin_ids:
+    for admin_id in config.ADMIN_IDS:
         await bot.send_message(admin_id, admin_message)
 
     await message.reply(f"Telegram ID: {message.from_user.id}, {message.from_user.username}\nID Заявки: {application_id}\nСтатус: ✅ Ваша заявка успешно отправлена!")
-    await state.finish()
+    await state.clear()
 
-
-async def view_active_applications(message: types.Message, admin_ids):
-    if message.from_user.id not in admin_ids:
+@router.message(F.text == '📄 Просмотр активных заявок')
+async def view_active_applications(message: types.Message):
+    if message.from_user.id not in config.ADMIN_IDS:
         await message.reply("У вас нет прав для выполнения этой команды.")
         return
 
@@ -270,38 +274,15 @@ async def view_active_applications(message: types.Message, admin_ids):
                 return
 
             for app in applications:
-                keyboard = InlineKeyboardMarkup()
-                approve_button = InlineKeyboardButton("✅ Одобрить", callback_data=f"approve_{app[0]}")
-                reject_button = InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_{app[0]}")
-                block_button = InlineKeyboardButton("🚫 Заблокировать", callback_data=f"block_{app[0]}")
-                keyboard.add(approve_button, reject_button, block_button)
-
-                await message.reply(
+                keyboard_markup = await inline_keyboard()
+                await message.answer(
                     f"ID заявки: {app[0]}\nTelegram: {app[2]}\nСтатус: {app[3]}\nTG ID: {app[1]}",
-                    reply_markup=keyboard)
+                    reply_markup=keyboard_markup)
 
-async def handle_decision_callback(callback_query: types.CallbackQuery, admin_ids):
-    action, app_id = callback_query.data.split('_')
-    app_id = int(app_id)
-    print('ВСЕ РАБОТАЕТ')
 
-    async with aiosqlite.connect('bot_database.db') as db:
-        print(f"Обновляем статус заявки .")
-        if action == "approve":
-            await db.execute('UPDATE applications SET status = "approved" WHERE id = ?', (app_id,))
-            
-            await callback_query.message.edit_text(f"Заявка {app_id} одобрена.")
-        elif action == "reject":
-            await db.execute('UPDATE applications SET status = "rejected" WHERE id = ?', (app_id,))
-            await callback_query.message.edit_text(f"Заявка {app_id} отклонена.")
-        elif action == "block":
-            await db.execute('UPDATE applications SET status = "blocked" WHERE id = ?', (app_id,))
-            await db.execute('INSERT INTO blocked_users (user_id) SELECT user_id FROM applications WHERE id = ?', (app_id,))
-            await callback_query.message.edit_text(f"Пользователь по заявке {app_id} заблокирован.")
-        await db.commit()
-
-async def view_closed_applications(message: types.Message, admin_ids):
-    if message.from_user.id not in admin_ids:
+@router.message(F.text == '📑 Просмотр закрытых заявок')
+async def view_closed_applications(message: types.Message):
+    if message.from_user.id not in config.ADMIN_IDS:
         await message.reply("У вас нет прав для выполнения этой команды.")
         return
 
@@ -315,9 +296,11 @@ async def view_closed_applications(message: types.Message, admin_ids):
             for app in applications:
                 await message.reply(f"ID заявки: {app[0]}\nGiveaway Link: {app[2]}\nСтатус: {app[3]}")
 
-async def handle_decision_callback(callback_query: types.CallbackQuery, admin_ids):
+@router.callback_query(ApplicationActionCallback.filter())
+async def handle_decision_callback(callback_query: types.CallbackQuery, callback_data: ApplicationActionCallback):
     action, app_id = callback_query.data.split('_')
-    app_id = int(app_id)
+    action = callback_data.action
+    app_id = callback_data.app_id
 
     async with aiosqlite.connect('bot_database.db') as db:
         if action == "approve":
@@ -350,7 +333,7 @@ async def handle_decision_callback(callback_query: types.CallbackQuery, admin_id
                         # Выплата
                         response = market.payments.transfer(
                             user_id=poster_id, 
-                            amount=price_id, 
+                            amount=config.price_id, 
                             currency="rub", 
                             comment=f"Выплата по заявке №{app_id}", 
                             secret_answer="15619740"
@@ -403,23 +386,3 @@ async def handle_decision_callback(callback_query: types.CallbackQuery, admin_id
             )
             await callback_query.message.edit_text(f"Пользователь {user_id} заблокирован.")
         await db.commit()
-
-
-def register_handlers(dp: Dispatcher, admin_ids):
-    dp.register_message_handler(lambda message: pay_command(message, admin_ids, dp.bot), commands="pay", state="*")
-    dp.register_message_handler(lambda message: start_command(message, admin_ids), commands="start", state="*")
-    dp.register_message_handler(start_application, text="📝 Отправить заявку", state="*")
-    dp.register_message_handler(lambda message, state: process_profile_link(message, state, dp.bot, admin_ids), state=ApplicationForm.profile_link)
-    dp.register_message_handler(lambda message: view_active_applications(message, admin_ids),
-                                text="📄 Просмотр активных заявок")
-    dp.register_message_handler(lambda message: view_closed_applications(message, admin_ids),
-                                text="📑 Просмотр закрытых заявок")
-    dp.register_message_handler(lambda message:  set_price(message, admin_ids), commands="price", state="*")
-    dp.register_callback_query_handler(lambda callback_query: handle_decision_callback(callback_query, admin_ids),
-                                       lambda c: c.data.startswith(('approve_', 'reject_', 'block_')))
-    dp.register_message_handler(lambda message: disabled(message, admin_ids), commands="turnoff", state="*")
-    dp.register_message_handler(lambda message: enabled(message, admin_ids), commands="turnon", state="*")
-    dp.register_message_handler(lambda message: clear_db_command(message, admin_ids), commands="cleardb", state="*")
-    dp.register_message_handler(lambda message: list_ads_command(message, admin_ids),
-                                text="📑 Получить ссылки на розыгрыши")
-    dp.register_message_handler(lambda message: get_info(message, admin_ids, dp.bot), commands="info", state="*")
