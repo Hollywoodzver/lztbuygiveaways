@@ -1,21 +1,21 @@
 import logging
-from aiogram import Bot, Dispatcher, executor
-from aiogram.contrib.middlewares.logging import LoggingMiddleware
-from aiogram.contrib.fsm_storage.memory import MemoryStorage
-from handlers import  init_db, register_handlers
-from config import API_TOKEN, ADMIN_IDS
+import asyncio
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram import Bot, Dispatcher
+from handlers import init_db
+import config
+
+from handlers import router
+
 
 logging.basicConfig(level=logging.INFO)
-
-bot = Bot(token=API_TOKEN)
-storage = MemoryStorage()
-dp = Dispatcher(bot, storage=storage)
-dp.middleware.setup(LoggingMiddleware())
-
-async def on_startup(dp):
+async def main():
     await init_db()
+    bot = Bot(token=config.API_TOKEN)  # Используем API_TOKEN из config.py
+    dp = Dispatcher(storage=MemoryStorage())
+    dp.include_router(router)  
 
-register_handlers(dp, ADMIN_IDS)
-print('000000')
+    await dp.start_polling(bot)
+
 if __name__ == '__main__':
-    executor.start_polling(dp, skip_updates=True, on_startup=on_startup)
+    asyncio.run(main())
